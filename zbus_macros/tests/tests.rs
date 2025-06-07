@@ -133,6 +133,142 @@ fn test_interface() {
         zvariant::{Type, Value},
     };
 
+    trait DummyShouldNotBeShadowed {
+        fn my_property(&self) -> u32 {
+            0
+        }
+        fn set_my_property(&self, _val: u32) {}
+    }
+
+    struct TestNoSetter;
+    impl DummyShouldNotBeShadowed for TestNoSetter {}
+
+    #[allow(dead_code)]
+    #[interface]
+    impl TestNoSetter {
+        #[cfg(test)]
+        #[zbus(property)]
+        fn my_property(&self) -> u32 {
+            0
+        }
+
+        #[cfg(any())]
+        #[zbus(property)]
+        fn set_my_property(&self, _val: u32) {
+            unimplemented!("should not be called")
+        }
+    }
+
+    // Assert that the setter is not generated
+    TestNoSetter.my_property();
+    TestNoSetter.set_my_property(0);
+
+    let mut writer = String::new();
+    TestNoSetter.introspect_to_writer(&mut writer, 0);
+    assert_eq!(
+        writer,
+        r#"<interface name="org.freedesktop.TestNoSetter">
+  <property name="MyProperty" type="u" access="readwrite"/>
+</interface>
+"#
+    );
+
+    struct TestNoGetterNoChangeSignal;
+    impl DummyShouldNotBeShadowed for TestNoGetterNoChangeSignal {}
+
+    #[allow(dead_code)]
+    #[interface(proxy)]
+    impl TestNoGetterNoChangeSignal {
+        #[cfg(any())]
+        #[zbus(property(emits_changed_signal = "false"))]
+        fn my_property(&self) -> u32 {
+            unimplemented!()
+        }
+
+        #[cfg(test)]
+        #[zbus(property)]
+        fn set_my_property(&self, _val: u32) {}
+    }
+
+    // Assert that the setter is not generated
+    TestNoGetterNoChangeSignal.my_property();
+    TestNoGetterNoChangeSignal.set_my_property(0);
+
+    let mut writer = String::new();
+    TestNoGetterNoChangeSignal.introspect_to_writer(&mut writer, 0);
+    assert_eq!(
+        writer,
+        r#"<interface name="org.freedesktop.TestNoGetterNoChangeSignal">
+  <property name="MyProperty" type="u" access="readwrite">
+    <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="false"/>
+  </property>
+</interface>
+"#
+    );
+
+    struct TestNoGetterConstChangeSignal;
+    impl DummyShouldNotBeShadowed for TestNoGetterConstChangeSignal {}
+
+    #[allow(dead_code)]
+    #[interface(proxy)]
+    impl TestNoGetterConstChangeSignal {
+        #[cfg(any())]
+        #[zbus(property(emits_changed_signal = "const"))]
+        fn my_property(&self) -> u32 {
+            unimplemented!()
+        }
+
+        #[cfg(test)]
+        #[zbus(property)]
+        fn set_my_property(&self, _val: u32) {}
+    }
+
+    // Assert that the setter is not generated
+    TestNoGetterConstChangeSignal.my_property();
+    TestNoGetterConstChangeSignal.set_my_property(0);
+
+    let mut writer = String::new();
+    TestNoGetterConstChangeSignal.introspect_to_writer(&mut writer, 0);
+    assert_eq!(
+        writer,
+        r#"<interface name="org.freedesktop.TestNoGetterConstChangeSignal">
+  <property name="MyProperty" type="u" access="readwrite">
+    <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+  </property>
+</interface>
+"#
+    );
+
+    struct TestAutoGetterCfg;
+
+    #[allow(dead_code)]
+    #[interface(auto_getter_cfg, proxy)]
+    impl TestAutoGetterCfg {
+        #[cfg(any())]
+        #[zbus(property)]
+        fn my_property(&self) -> u32 {
+            0
+        }
+
+        #[cfg(test)]
+        #[zbus(property)]
+        fn set_my_property(&self, _val: u32) {}
+    }
+
+    // Test that the auto-getter cfg works
+    TestAutoGetterCfg.my_property();
+    TestAutoGetterCfg.set_my_property(0);
+
+    let mut writer = String::new();
+    TestAutoGetterCfg.introspect_to_writer(&mut writer, 0);
+    assert_eq!(
+        writer,
+        r#"<interface name="org.freedesktop.TestAutoGetterCfg">
+  <property name="MyProperty" type="u" access="readwrite"/>
+</interface>
+"#
+    );
+
     struct Test<T> {
         something: String,
         generic: T,

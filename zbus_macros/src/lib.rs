@@ -235,6 +235,14 @@ pub fn proxy(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///   (Default: `true`). If your interface is well-known or well-documented, you may want to set
 ///   this to `false` to reduce the the size of your binary and D-Bus traffic.
 ///
+/// * `auto_getter_cfg` – Controls whether a property's getter should automatically inherit the
+///   `cfg` attributes (conditional compilation) from its corresponding setter. This is useful
+///   because the getter should be available whenever the setter is. When enabled, the getter’s
+///   `cfg` will be expanded to `cfg(any(all(G), all(S)))`, where `G` and `S` are the original `cfg`
+///   conditions on the getter and setter, respectively. This ensures that both accessors are
+///   conditionally compiled under compatible conditions, which is especially helpful when using the
+///   `proxy` generation feature or the property's `emits_changed_signal` is not `false`/`const`.
+///
 /// The methods accepts the `interface` attributes:
 ///
 /// * `name` - override the D-Bus name (pascal case form of the method by default)

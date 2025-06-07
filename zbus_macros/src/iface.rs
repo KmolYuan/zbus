@@ -25,6 +25,7 @@ def_attrs! {
         name str,
         spawn bool,
         introspection_docs bool,
+        auto_getter_cfg none,
         proxy {
             // Keep this in sync with proxy's method attributes.
             // TODO: Find a way to share code with proxy module.
@@ -335,6 +336,7 @@ pub fn expand(args: Punctuated<Meta, Token![,]>, mut input: ItemImpl) -> syn::Re
         .proxy
         .map(|p| Proxy::new(ty, &iface_name, p, &zbus));
     let introspect_docs = impl_attrs.introspection_docs.unwrap_or(true);
+    let auto_getter_cfg = impl_attrs.auto_getter_cfg;
 
     // Store parsed information about each method
     let mut methods = vec![];
@@ -417,6 +419,10 @@ pub fn expand(args: Punctuated<Meta, Token![,]>, mut input: ItemImpl) -> syn::Re
                 property.cfg_attr = Some(cfg_attr);
             }
         };
+        if auto_getter_cfg && method_info.method_type == MethodType::Property(PropertyType::Getter)
+        {
+            method.attrs.retain(|attr| !attr.path().is_ident("cfg"));
+        }
         methods.push((method, method_info));
     }
 
@@ -655,6 +661,14 @@ pub fn expand(args: Punctuated<Meta, Token![,]>, mut input: ItemImpl) -> syn::Re
                     if p.cfg_attr == Some(parse_quote!(#[cfg(all())])) {
                         p.cfg_attr = None;
                     }
+                    let cfg_attrs = if auto_getter_cfg {
+                        if let Some(cfg_attr) = &p.cfg_attr {
+                            method.attrs.push(cfg_attr.clone());
+                        }
+                        Vec::from_iter(p.cfg_attr.as_ref())
+                    } else {
+                        cfg_attrs
+                    };
 
                     p.ty = Some(get_return_type(output)?);
                     p.read = true;
