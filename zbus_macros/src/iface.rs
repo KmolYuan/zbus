@@ -1,4 +1,4 @@
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use std::collections::BTreeMap;
 use syn::{
@@ -73,25 +73,14 @@ def_attrs! {
     };
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Property<'a> {
     read: bool,
     write: bool,
     emits_changed_signal: PropertyEmitsChangedSignal,
     ty: Option<&'a Type>,
     doc_comments: TokenStream,
-}
-
-impl Property<'_> {
-    fn new() -> Self {
-        Self {
-            read: false,
-            write: false,
-            emits_changed_signal: PropertyEmitsChangedSignal::True,
-            ty: None,
-            doc_comments: quote!(),
-        }
-    }
+    cfg_attr: Option<Attribute>,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -405,20 +394,27 @@ pub fn expand(args: Punctuated<Meta, Token![,]>, mut input: ItemImpl) -> syn::Re
         )?;
         let attr_property = method_attrs.property;
         if let Some(prop_attrs) = &attr_property {
+            let property: &mut Property<'_> = properties
+                .entry(method_info.member_name.to_string())
+                .or_default();
             if method_info.method_type == MethodType::Property(PropertyType::Getter) {
                 let emits_changed_signal = if let Some(s) = &prop_attrs.emits_changed_signal {
                     PropertyEmitsChangedSignal::parse(s, method.span())?
                 } else {
                     PropertyEmitsChangedSignal::True
                 };
-                let mut property = Property::new();
                 property.emits_changed_signal = emits_changed_signal;
-                properties.insert(method_info.member_name.to_string(), property);
             } else if prop_attrs.emits_changed_signal.is_some() {
                 return Err(syn::Error::new(
                     method.span(),
                     "`emits_changed_signal` cannot be specified on setters",
                 ));
+            }
+            let cfg_attr = merge_cfg_attrs(cfg_attrs, "all")?;
+            if let Some(exist_cfg_attr) = &mut property.cfg_attr {
+                *exist_cfg_attr = merge_cfg_attrs([exist_cfg_attr, &cfg_attr], "any")?;
+            } else {
+                property.cfg_attr = Some(cfg_attr);
             }
         };
         methods.push((method, method_info));
@@ -507,10 +503,7 @@ pub fn expand(args: Punctuated<Meta, Token![,]>, mut input: ItemImpl) -> syn::Re
                 });
             }
             MethodType::Property(_) => {
-                let p = properties.get_mut(&member_name).ok_or(Error::new_spanned(
-                    &member_name,
-                    "Write-only properties aren't supported yet",
-                ))?;
+                let p = properties.get_mut(&member_name).unwrap();
 
                 let sk_member_name = case::snake_or_kebab_case(&member_name, true);
                 let prop_changed_method_name = format_ident!("{sk_member_name}_changed");
@@ -659,6 +652,9 @@ pub fn expand(args: Punctuated<Meta, Token![,]>, mut input: ItemImpl) -> syn::Re
                     }
                 } else {
                     let is_fallible_property = is_result_output;
+                    if p.cfg_attr == Some(parse_quote!(#[cfg(all())])) {
+                        p.cfg_attr = None;
+                    }
 
                     p.ty = Some(get_return_type(output)?);
                     p.read = true;
@@ -689,7 +685,7 @@ pub fn expand(args: Punctuated<Meta, Token![,]>, mut input: ItemImpl) -> syn::Re
                     get_dispatch.extend(q);
 
                     let q = if is_fallible_property {
-                        quote!({
+                        quote!(#(#cfg_attrs)* {
                             #args_from_msg
                             if let Ok(prop) = self.#ident(#args_names)#method_await {
                             props.insert(
@@ -703,17 +699,18 @@ pub fn expand(args: Punctuated<Meta, Token![,]>, mut input: ItemImpl) -> syn::Re
                             );
                         }})
                     } else {
-                        quote!({
+                        quote!(#(#cfg_attrs)* {
                             #args_from_msg
                             props.insert(
-                        ::std::string::ToString::to_string(#member_name),
-                        <#zbus::zvariant::OwnedValue as ::std::convert::TryFrom<_>>::try_from(
-                            <#zbus::zvariant::Value as ::std::convert::From<_>>::from(
-                                self.#ident(#args_names)#method_await,
-                            ),
-                        )
-                        .map_err(|e| #zbus::fdo::Error::Failed(e.to_string()))?,
-                    );})
+                                ::std::string::ToString::to_string(#member_name),
+                                <#zbus::zvariant::OwnedValue as ::std::convert::TryFrom<_>>::try_from(
+                                    <#zbus::zvariant::Value as ::std::convert::From<_>>::from(
+                                        self.#ident(#args_names)#method_await,
+                                    ),
+                                )
+                                .map_err(|e| #zbus::fdo::Error::Failed(e.to_string()))?,
+                            );
+                        })
                     };
 
                     get_all.extend(q);
@@ -732,6 +729,7 @@ pub fn expand(args: Punctuated<Meta, Token![,]>, mut input: ItemImpl) -> syn::Re
                              its setter method."
                         );
                         let prop_changed_method = quote!(
+                            #(#cfg_attrs)*
                             #[doc = #changed_doc]
                             pub async fn #prop_changed_method_name(
                                 &self,
@@ -765,6 +763,7 @@ pub fn expand(args: Punctuated<Meta, Token![,]>, mut input: ItemImpl) -> syn::Re
                              (causing excess traffic on the bus)."
                         );
                         let prop_invalidate_method = quote!(
+                            #(#cfg_attrs)*
                             #[doc = #invalidate_doc]
                             pub async fn #prop_invalidate_method_name(
                                 &self,
@@ -1148,6 +1147,26 @@ fn clear_input_arg_attrs(inputs: &mut Punctuated<FnArg, Token![,]>) {
     }
 }
 
+// Merge multiple cfg attributes into a `cfg(any(..))` or `cfg(all(..))` attribute.
+fn merge_cfg_attrs<'a>(
+    cfgs: impl IntoIterator<Item = &'a Attribute>,
+    op: &'static str,
+) -> Result<Attribute, Error> {
+    let mut metas = Vec::<Meta>::new();
+    for cfg in cfgs {
+        let tt = &cfg.meta.require_list()?.tokens;
+        metas.push(parse_quote!(#tt));
+    }
+    if let [meta] = &metas[..] {
+        Ok(parse_quote!(#[cfg(#meta)]))
+    } else if op == "any" && metas.iter().any(|meta| *meta == parse_quote!(all())) {
+        Ok(parse_quote!(#[cfg(all())]))
+    } else {
+        let op = Ident::new(op, Span::call_site());
+        Ok(parse_quote!(#[cfg(#op(#(#metas),*))]))
+    }
+}
+
 fn introspect_signal(name: &str, args: &TokenStream) -> TokenStream {
     let format_str = format!("{}<signal name=\"{name}\">", "{:indent$}");
     quote!(
@@ -1358,16 +1377,17 @@ fn introspect_properties(
             Error::new_spanned(&name, "Write-only properties aren't supported yet")
         })?;
 
+        let cfg_attr = &prop.cfg_attr;
         let doc_comments = prop.doc_comments;
         if prop.emits_changed_signal == PropertyEmitsChangedSignal::True {
             let format_str = format!(
                 "{}<property name=\"{name}\" type=\"{}\" access=\"{access}\"/>",
                 "{:indent$}", "{}",
             );
-            introspection.extend(quote!(
+            introspection.extend(quote!(#cfg_attr {
                 #doc_comments
                 ::std::writeln!(writer, #format_str, "", <#ty>::SIGNATURE, indent = level).unwrap();
-            ));
+            }));
         } else {
             let emits_changed_signal = prop.emits_changed_signal.to_string();
             let annot_name = "org.freedesktop.DBus.Property.EmitsChangedSignal";
@@ -1377,14 +1397,14 @@ fn introspect_properties(
                 {}</property>",
                 "{:indent$}", "{}", "{:annot_indent$}", "{:indent$}",
             );
-            introspection.extend(quote!(
+            introspection.extend(quote!(#cfg_attr {
                 #doc_comments
                 ::std::writeln!(
                     writer,
                     #format_str,
                     "", <#ty>::SIGNATURE, "", "", indent = level, annot_indent = level + 2,
                 ).unwrap();
-            ));
+            }));
         }
     }
 
