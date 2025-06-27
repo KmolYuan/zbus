@@ -351,6 +351,21 @@ impl<'a> Proxy<'a> {
         block_on(self.inner().receive_owner_changed()).map(OwnerChangedIterator)
     }
 
+    /// Wait for the property `name` to meet the predicate `predicate`.
+    ///
+    /// Since this is a blocking API, this function will block the current thread until the
+    /// predicate is met.
+    ///
+    /// Note that zbus doesn't queue the updates. If the listener is slower than the receiver, it
+    /// will only receive the last update.
+    pub fn wait_property_for<T>(&self, name: &str, predicate: impl FnMut(&T) -> bool) -> Result<T>
+    where
+        T: TryFrom<OwnedValue> + Unpin,
+        T::Error: Into<Error>,
+    {
+        block_on(self.inner().wait_property_for(name, predicate))
+    }
+
     /// Get a reference to the underlying async Proxy.
     pub fn inner(&self) -> &crate::Proxy<'a> {
         self.azync.as_ref().expect("Inner proxy is `None`")
