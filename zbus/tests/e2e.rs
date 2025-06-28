@@ -580,6 +580,7 @@ async fn my_iface_test(conn: Connection, event: Event) -> zbus::Result<u32> {
 
     // Test waiting for properties with no cache
     assert_await_property(&proxy, "EmitsChangedDefault", 42).await?;
+    assert_await_static_property(&proxy, 64).await?;
     assert_await_property(&proxy, "EmitsChangedTrue", 42).await?;
     assert_await_property(&proxy, "EmitsChangedInvalidates", 42).await?;
     assert_await_property(&proxy, "EmitsChangedConst", 42).await?;
@@ -755,6 +756,7 @@ async fn my_iface_test(conn: Connection, event: Event) -> zbus::Result<u32> {
 
     // Test waiting for properties
     assert_await_property(&proxy, "EmitsChangedDefault", 42).await?;
+    assert_await_static_property(&proxy, 64).await?;
     assert_await_property(&proxy, "EmitsChangedTrue", 64).await?;
     assert_await_property(&proxy, "EmitsChangedInvalidates", 64).await?;
     assert_await_property(&proxy, "EmitsChangedConst", 64).await?;
@@ -916,6 +918,22 @@ async fn assert_await_property(
     };
     let (val, ()) = futures_util::try_join!(
         proxy.wait_property_for::<u32>(name, |val| *val == target),
+        set_val_after,
+    )?;
+    assert_eq!(val, target);
+    Ok(())
+}
+
+async fn assert_await_static_property(proxy: &MyIfaceProxy<'_>, target: u32) -> zbus::Result<()> {
+    debug!("Test waiting EmitsChangedDefault={target}");
+    assert_ne!(proxy.emits_changed_default().await?, target);
+    let set_val_after = async {
+        async_io::Timer::after(std::time::Duration::from_millis(10)).await;
+        proxy.set_emits_changed_default(target).await?;
+        Ok(())
+    };
+    let (val, ()) = futures_util::try_join!(
+        proxy.wait_emits_changed_default_for(|val| *val == target),
         set_val_after,
     )?;
     assert_eq!(val, target);
